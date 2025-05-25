@@ -32,6 +32,9 @@ void Camera::processKeyboardInput(GLFWwindow* window, float deltaTime) {
 	float velocity = movementSpeed * deltaTime;
 	bool moved = false;
 	
+    if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
+        velocity = movementSpeed * deltaTime * 3;
+    }
 	if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
 		position += front * velocity;
 		moved = true;

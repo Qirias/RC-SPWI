@@ -96,7 +96,7 @@ fragment half4 final_gather_fragment(VertexOut in [[stage_in]],
     half3 normal = normalize(normalRaw.xyz);
     float currentDepth = depthTexture.sample(samplerLinear, texCoords).x;
     
-    // If pixel is empty draw the sky
+    // If pixel is empty, draw the sky
     if (length(albedoSpecular.rgb) == 0.0) {
         if (drawSky) {
             float4 clipPos = float4(in.texCoords * 2.0 - 1.0, 0.0, 1.0);
@@ -113,17 +113,9 @@ fragment half4 final_gather_fragment(VertexOut in [[stage_in]],
     
     bool isEmissive = (normalRaw.a == -1);
     
-    // Render the radiance texture for debugging the cascades
     if (!doBilinear) {
         float4 radiance = radianceTexture.sample(samplerLinear, texCoords);
-        
-        half3 upVector = half3(0.0, 1.0, 0.0);
-        half normalFactor = max(0.0h, dot(half3(normal), upVector) * 0.5h + 0.5h);
-        
-        half3 normalModulatedRadiance = half3(radiance.rgb) * normalFactor;
-        half3 finalColor = albedo * normalModulatedRadiance;
-        
-        return half4(finalColor, 1.0);
+        return half4(half3(radiance.rgb), 1.0);
     }
     
     // Calculate probe grid coordinates
@@ -132,12 +124,6 @@ fragment half4 final_gather_fragment(VertexOut in [[stage_in]],
     int2 probeBase = int2(floor(probeCoord));
     float2 probeFrac = fract(probeCoord);
     probeBase = clamp(probeBase, int2(0), int2(probeGridSize) - int2(2));
-
-    // Default bilinear weights
-    float4 bilinearWeights = float4((1.0f - probeFrac.x) * (1.0f - probeFrac.y),
-                                   probeFrac.x * (1.0f - probeFrac.y),
-                                   (1.0f - probeFrac.x) * probeFrac.y,
-                                   probeFrac.x * probeFrac.y);
 
     int2 probeOffsets[4] = {int2(0, 0), int2(1, 0), int2(0, 1), int2(1, 1)};
     float4 probeDepths;
@@ -150,7 +136,13 @@ fragment half4 final_gather_fragment(VertexOut in [[stage_in]],
         probeDepths[i] = depthTexture.sample(samplerLinear, probeUVs[i]).x;
     }
 
-    // Perform bilateral filtering for depth awareness
+    // Calculate bilinear weights with depth-aware filtering
+    float4 bilinearWeights = float4((1.0f - probeFrac.x)    * (1.0f - probeFrac.y),
+                                   probeFrac.x              * (1.0f - probeFrac.y),
+                                   (1.0f - probeFrac.x)     * probeFrac.y,
+                                   probeFrac.x              * probeFrac.y);
+
+    // Apply bilateral filtering for depth discontinuities
     float mind = min(min(probeDepths.x, probeDepths.y), min(probeDepths.z, probeDepths.w));
     float maxd = max(max(probeDepths.x, probeDepths.y), max(probeDepths.z, probeDepths.w));
     float diffd = maxd - mind;
@@ -166,46 +158,43 @@ fragment half4 final_gather_fragment(VertexOut in [[stage_in]],
     float wsum = w.x + w.y + w.z + w.w;
     w /= wsum;
 
-    // Calculate parameters for direction sampling
+    // Direction-first layout sampling parameters
     const uint probeTileSize = 4; // Cascade 0 octahedrons are always 4x4
-    uint raysPerDim = probeTileSize;
-    uint probeGridSizeX = probeGridSize.x;
-    uint probeGridSizeY = probeGridSize.y;
+    uint probeGridSizeX = uint(probeGridSize.x);
+    uint probeGridSizeY = uint(probeGridSize.y);
 
     float4 probeRadiance[4];
     
+    // Sample radiance for each probe using direction-first layout
     for (int probeIdx = 0; probeIdx < 4; probeIdx++) {
         float4 radianceSum = float4(0.0);
         float totalWeight = 0.0;
         
-        // For each direction, sample and apply cosine weighting
-        for (uint y = 0; y < probeTileSize; y++) {
-            for (uint x = 0; x < probeTileSize; x++) {
-                float2 dirUV = float2((x + 0.5f) / probeTileSize, (y + 0.5f) / probeTileSize);
-                float3 direction = octDecode(dirUV);
-                float cosTheta = max(0.0, dot(float3(normal), direction));
-                
-                // UV in direction-first layout
-                // For each direction (x,y), we have a complete probe grid
-                // We need to find the correct probe in that direction's grid
-                uint2 texCoord = uint2(
-                    x * probeGridSizeX + probeCoords[probeIdx].x,
-                    y * probeGridSizeY + probeCoords[probeIdx].y
-                );
-                
-                float2 sampleUV = float2(texCoord) / float2(raysPerDim * probeGridSizeX,
-                                                           raysPerDim * probeGridSizeY);
-                
-                if (isEmissive) {
-                    float3 emissiveContribution = float3(albedo) * cosTheta;
-                    radianceSum += float4(emissiveContribution, 1.0) * cosTheta;
-                } else {
-                    float4 sample = radianceTexture.sample(samplerLinear, sampleUV);
-                    radianceSum += sample * cosTheta;
-                }
-                
-                totalWeight += cosTheta;
+        for (uint directionIndex = 0; directionIndex < (probeTileSize * probeTileSize); directionIndex++) {
+            uint dirX = directionIndex % probeTileSize;
+            uint dirY = directionIndex / probeTileSize;
+            
+            float2 dirUV = float2((dirX + 0.5f) / probeTileSize, (dirY + 0.5f) / probeTileSize);
+            float3 direction = octDecode(dirUV);
+            float cosTheta = max(0.0, dot(float3(normal), direction));
+            
+            // Calculate texture coordinates for direction-first layout
+            // Each direction (dirX, dirY) has its own complete probe grid
+            uint2 texCoord = uint2(dirX * probeGridSizeX + probeCoords[probeIdx].x,
+                                   dirY * probeGridSizeY + probeCoords[probeIdx].y);
+            
+            float2 sampleUV = (float2(texCoord) + 0.5f) / float2(probeTileSize * probeGridSizeX,
+                                                                 probeTileSize * probeGridSizeY);
+            
+            if (isEmissive) {
+                float3 emissiveContribution = float3(albedo) * cosTheta;
+                radianceSum += float4(emissiveContribution, 1.0) * cosTheta;
+            } else {
+                float4 sample = radianceTexture.sample(samplerLinear, sampleUV);
+                radianceSum += sample * cosTheta;
             }
+            
+            totalWeight += cosTheta;
         }
         
         probeRadiance[probeIdx] = (totalWeight > 0.0001f) ? (radianceSum / totalWeight) : float4(0.0);

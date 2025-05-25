@@ -65,7 +65,7 @@ float3 reconstructWorldPositionFromLinearDepth(float2 ndc, float linearDepth, Fr
     viewPos /= viewPos.w;
     
     float scale = linearDepth / fabs(viewPos.z);
-    float depthBias = 0.999; // depth bias to avoid acne
+    float depthBias = 0.98; // depth bias to avoid acne
 
     float3 viewPosAtDepth = viewPos.xyz * (scale * depthBias);
     
@@ -109,28 +109,21 @@ float4 mergeUpperCascade(texture2d<float, access::sample> upperRadianceTexture,
                          float3 currentWorldPos,
                          CascadeData cascadeData,
                          FrameData frameData) {
-    // Get texture dimensions
     uint upperTexWidth = upperRadianceTexture.get_width();
     uint upperTexHeight = upperRadianceTexture.get_height();
     
-    // Get cascade parameters
     uint currentCascadeLevel = cascadeData.cascadeLevel;
     uint upperCascadeLevel = currentCascadeLevel + 1;
     
     // Calculate parameters for current cascade
     uint probeSpacing = cascadeData.probeSpacing;
-    uint tileSize = probeSpacing * (1 << currentCascadeLevel);
-    uint probeGridSizeX = (frameData.framebuffer_width + tileSize - 1) / tileSize;
-    uint probeGridSizeY = (frameData.framebuffer_height + tileSize - 1) / tileSize;
     uint raysPerDim = (1 << (currentCascadeLevel + 2));
     
     // Calculate parameters for upper cascade
     uint upperTileSize = probeSpacing * (1 << upperCascadeLevel);
     uint upperProbeGridSizeX = (frameData.framebuffer_width + upperTileSize - 1) / upperTileSize;
     uint upperProbeGridSizeY = (frameData.framebuffer_height + upperTileSize - 1) / upperTileSize;
-    uint upperRaysPerDim = (1 << (upperCascadeLevel + 2));
     
-    // Convert direction to octahedral coordinates
     float2 octDir = octEncode(rayDir);
     
     // Calculate ray indices and fractions for interpolation
@@ -147,11 +140,8 @@ float4 mergeUpperCascade(texture2d<float, access::sample> upperRadianceTexture,
     float2 upperProbeCoord = probeUV * float2(upperProbeGridSizeX, upperProbeGridSizeY) - 0.5f;
     int2 upperProbeBase = int2(floor(upperProbeCoord));
     float2 upperProbeFrac = fract(upperProbeCoord);
-    
-    // Get probe offsets for bilinear interpolation
     int2 probeOffsets[4] = {int2(0, 0), int2(1, 0), int2(0, 1), int2(1, 1)};
     
-    // Gather probe data for 3D-aware interpolation
     float4 upperProbeDepths;
     int2 probeCoords[4];
     float2 probeUVs[4];
@@ -186,7 +176,7 @@ float4 mergeUpperCascade(texture2d<float, access::sample> upperRadianceTexture,
         float4 probeRadiance = float4(0.0f);
         
         for (int dirIdx = 0; dirIdx < 4; dirIdx++) {
-            int2 upperRayIndex = clamp(dirBase * 2 + dirOffsets[dirIdx], int2(0), int2(upperRaysPerDim - 1));
+            int2 upperRayIndex = dirBase * 2 + dirOffsets[dirIdx];
             
             // For direction-first layout, the texture coordinates are:
             // (rayIndex * probeGridSize + probeIndex)
@@ -245,10 +235,8 @@ kernel void raytracingKernel(texture2d<float, access::write>    radianceTexture 
     uint dirY = directionIndex / raysPerDim;
     
     // Center of pixel
-    float2 dirUV = float2(
-        (dirX + 0.5f) / float(raysPerDim),
-        (dirY + 0.5f) / float(raysPerDim)
-    );
+    float2 dirUV = float2((dirX + 0.5f) / float(raysPerDim),
+                          (dirY + 0.5f) / float(raysPerDim));
 
     float3 rayDir = octDecode(dirUV);
     
@@ -270,7 +258,7 @@ kernel void raytracingKernel(texture2d<float, access::write>    radianceTexture 
 //    }
     
     // Calculate cascade ranges
-    const float baseCascadeRange = 0.016f; // Magic number determined by trial and error
+    const float baseCascadeRange = 0.4f; // Magic number determined by trial and error
     const float cascadeRangeMultiplier = 4.0f; // The branching factor
     float cascadeStartRange = (cascadeLevel == 0) ? 0.0f : (baseCascadeRange * pow(cascadeRangeMultiplier, float(cascadeLevel - 1)));
     float cascadeEndRange = baseCascadeRange * pow(cascadeRangeMultiplier, float(cascadeLevel));
@@ -354,6 +342,5 @@ kernel void raytracingKernel(texture2d<float, access::write>    radianceTexture 
     uint texX = dirX * probeGridSizeX + probeX;
     uint texY = dirY * probeGridSizeY + probeY;
     
-    // Write to the texture
     radianceTexture.write(radiance, uint2(texX, texY));
 }
