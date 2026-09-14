@@ -47,7 +47,7 @@
                 "rot": [0.0, 90.0, 0.0],
                 "hasTextures": false,
                 "isEmissive": true,
-                "emissiveColor": [0.0, 0.75, 1.5]
+                "emissiveColor": [1.0, 1.0, 1.0]
 
             }
         ]
